@@ -183,7 +183,8 @@ const MEALS = [['breakfast', 'Завтрак'], ['lunch', 'Обед'], ['dinner'
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { toast('Не удалось сохранить данные на устройстве'); } };
 
-let settings = Object.assign({ key: '', model: 'gemini-2.5-flash', kcal: 0, protein: 0, fat: 0, carbs: 0 }, load(K.set, {}));
+let settings = Object.assign({ key: '', model: 'gemini-3.8-flash', kcal: 0, protein: 0, fat: 0, carbs: 0 }, load(K.set, {}));
+if (settings.model === 'gemini-2.5-flash') settings.model = 'gemini-3.8-flash'; // старая модель закрыта для новых ключей
 let entries = load(K.ent, []);
 let offset = 0;      // сколько дней назад показываем
 let addMeal = 'breakfast';
@@ -273,16 +274,20 @@ function render() {
 }
 
 async function ask(parts) {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model || 'gemini-2.5-flash')}:generateContent`, {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 45000);
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model || 'gemini-3.8-flash')}:generateContent`, {
     method: 'POST',
+    signal: ctl.signal,
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: PROMPT }] },
       contents: [{ role: 'user', parts }],
-      generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, temperature: 0.1 }
+      generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingLevel: 'low' } }
     })
   });
   const data = await res.json().catch(() => ({}));
+  clearTimeout(timer);
   if (!res.ok) throw new Error(data.error?.message || `Ошибка ${res.status}`);
   const out = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
   return JSON.parse(out).items || [];
@@ -354,7 +359,8 @@ async function addFromParts(parts) {
     render();
     if (dbDown) toast('База продуктов недоступна, часть значений оценена Gemini');
   } catch (err) {
-    $('#err').textContent = 'Не получилось посчитать: ' + (err.message || 'неизвестная ошибка');
+    $('#err').textContent = err.name === 'AbortError' ? 'Gemini отвечает слишком долго. Попробуй ещё раз.'
+      : 'Не получилось посчитать: ' + (err.message || 'неизвестная ошибка');
   } finally {
     busy = false;
     $('#a-ok').disabled = false;
@@ -560,7 +566,7 @@ $('#inp').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventD
 $('#s-cancel').addEventListener('click', () => $('#sheet').close());
 $('#s-save').addEventListener('click', () => {
   settings.key = $('#s-key').value.trim();
-  settings.model = $('#s-model').value.trim() || 'gemini-2.5-flash';
+  settings.model = $('#s-model').value.trim() || 'gemini-3.8-flash';
   ['kcal', 'protein', 'fat', 'carbs'].forEach(k => settings[k] = Math.max(0, +$('#s-' + k).value || 0));
   save(K.set, settings);
   $('#sheet').close();
