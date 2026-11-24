@@ -54,7 +54,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:10p
 .mh .s{color:var(--mute);font-size:15px}
 .add{width:36px;height:36px;border-radius:50%;border:0;background:var(--acc);color:#fff;font-size:24px;line-height:1;padding:0}
 .row-e{display:flex;align-items:center;gap:8px;padding:10px 8px 10px 16px;border-top:1px solid var(--line)}
-.row-e .t{flex:1;min-width:0}
+.row-e button.t{flex:1;min-width:0;padding:0;font:inherit;color:inherit;text-align:left}
 .row-e .t b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-e .t small{display:block;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-e .k{font-weight:600}
@@ -69,7 +69,8 @@ dialog input{width:100%;font:inherit;font-size:16px;padding:11px 12px;margin-top
 .g4{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
 dialog p{font-size:13px;color:var(--mute);margin:12px 0 0}
 dialog a{color:var(--acc)}
-#err{color:var(--over);min-height:1em}
+#err,#e-err{color:var(--over);min-height:1em}
+dialog{max-height:calc(100dvh - 40px);overflow:auto}
 .acts{display:flex;gap:8px;margin-top:16px}
 .acts button{flex:1;padding:12px;border-radius:12px;border:1px solid var(--line);background:none}
 .acts .ok{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
@@ -156,6 +157,22 @@ dialog a{color:var(--acc)}
   </div>
   <p id="err" role="alert"></p>
   <div class="acts"><button id="a-cancel">Отмена</button><button class="ok" id="a-ok">Считать</button></div>
+</dialog>
+
+<dialog id="edit">
+  <h2>Изменить запись</h2>
+  <div class="chips" id="e-chips"></div>
+  <label>Название<input id="e-name" type="text" autocomplete="off"></label>
+  <div class="g4">
+    <label>Вес, г<input id="e-grams" type="number" inputmode="decimal" min="0"></label>
+    <label>Ккал<input id="e-kcal" type="number" inputmode="decimal" min="0"></label>
+    <label>Белки, г<input id="e-protein" type="number" inputmode="decimal" min="0"></label>
+    <label>Жиры, г<input id="e-fat" type="number" inputmode="decimal" min="0"></label>
+    <label>Углеводы, г<input id="e-carbs" type="number" inputmode="decimal" min="0"></label>
+  </div>
+  <p>При смене веса КБЖУ пересчитываются сами, любое значение можно поправить вручную.</p>
+  <p id="e-err" role="alert"></p>
+  <div class="acts"><button id="e-cancel">Отмена</button><button class="ok" id="e-save">Сохранить</button></div>
 </dialog>
 
 <dialog id="sheet">
@@ -265,32 +282,67 @@ function render() {
     const sum = items.reduce((a, e) => a + e.kcal, 0);
     return `<section class="meal num"><div class="mh"><h2>${name}</h2><span class="s">${r0(sum)} ккал</span>
       <button class="add" data-meal="${id}" aria-label="Добавить: ${name}">+</button></div>` +
-      items.map(e => `<div class="row-e"><div class="t"><b>${esc(e.name)}</b>
+      items.map(e => `<div class="row-e"><button class="t" data-edit="${esc(e.id)}" aria-label="Изменить: ${esc(e.name)}"><b>${esc(e.name)}</b>
         <small>${r0(e.grams)} г · Б ${r1(e.protein)} · Ж ${r1(e.fat)} · У ${r1(e.carbs)}</small>
-        ${e.src ? `<small>${e.src === 'db' ? '✓ база: ' + esc(e.ref) : '≈ оценка Gemini'}</small>` : ''}</div>
+        ${e.src ? `<small>${e.src === 'db' ? '✓ база: ' + esc(e.ref) : e.src === 'manual' ? '✎ изменено вручную' : '≈ оценка Gemini'}</small>` : ''}</button>
         <span class="k">${r0(e.kcal)}</span>
         <button data-id="${esc(e.id)}" aria-label="Удалить ${esc(e.name)}">×</button></div>`).join('') + '</section>';
   }).join('');
 }
 
-async function ask(parts) {
+const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.8-flash'];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function askOnce(model, parts) {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 45000);
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model || 'gemini-3.5-flash-lite')}:generateContent`, {
-    method: 'POST',
-    signal: ctl.signal,
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: PROMPT }] },
-      contents: [{ role: 'user', parts }],
-      generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingLevel: 'low' } }
-    })
-  });
-  const data = await res.json().catch(() => ({}));
-  clearTimeout(timer);
-  if (!res.ok) throw new Error(data.error?.message || `Ошибка ${res.status}`);
-  const out = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-  return JSON.parse(out).items || [];
+  const timer = setTimeout(() => ctl.abort(), 25000);
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      signal: ctl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: PROMPT }] },
+        contents: [{ role: 'user', parts }],
+        generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingLevel: 'low' } }
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error?.message || `Ошибка ${res.status}`);
+      err.retry = [429, 500, 503, 504].includes(res.status);   // перегрузка: можно повторить
+      throw err;
+    }
+    const out = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+    return JSON.parse(out).items || [];
+  } catch (err) {
+    if (err.name === 'AbortError') err.retry = true;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// сначала выбранная модель (2 попытки), при перегрузке пробуем запасные
+async function ask(parts) {
+  const chain = [settings.model || 'gemini-3.5-flash-lite', ...FALLBACK_MODELS.filter(m => m !== settings.model)];
+  let first = null;
+  for (let i = 0; i < chain.length; i++) {
+    for (let attempt = 0; attempt < (i === 0 ? 2 : 1); attempt++) {
+      try {
+        return await askOnce(chain[i], parts);
+      } catch (err) {
+        first = first || err;
+        if (!err.retry) {
+          if (i === 0) throw err;   // ключ, запрос или модель в настройках: повторять бессмысленно
+          break;                    // у запасной модели своя ошибка: идём к следующей
+        }
+        $('#a-ok').textContent = 'Gemini занят, пробую ещё раз…';
+        await sleep(1500);
+      }
+    }
+  }
+  throw first;
 }
 
 async function offLookup(q) {
@@ -360,6 +412,7 @@ async function addFromParts(parts) {
     if (dbDown) toast('База продуктов недоступна, часть значений оценена Gemini');
   } catch (err) {
     $('#err').textContent = err.name === 'AbortError' ? 'Gemini отвечает слишком долго. Попробуй ещё раз.'
+      : err.retry ? 'Gemini сейчас перегружен. Попробуй ещё раз через минуту.'
       : 'Не получилось посчитать: ' + (err.message || 'неизвестная ошибка');
   } finally {
     busy = false;
@@ -588,6 +641,8 @@ $('#s-save').addEventListener('click', () => {
 $('#meals').addEventListener('click', e => {
   const a = e.target.closest('button[data-meal]');
   if (a) { openAdd(a.dataset.meal); return; }
+  const ed = e.target.closest('button[data-edit]');
+  if (ed) { openEdit(ed.dataset.edit); return; }
   const d = e.target.closest('button[data-id]');
   if (d) {
     entries = entries.filter(x => x.id !== d.dataset.id);
@@ -595,6 +650,51 @@ $('#meals').addEventListener('click', e => {
     render();
   }
 });
+// --- редактирование записи
+const EF = ['grams', 'kcal', 'protein', 'fat', 'carbs'];
+let editing = null, editBase = null, editMeal = 'snack';
+const readEdit = () => Object.fromEntries(EF.map(k => [k, +$('#e-' + k).value || 0]));
+function setEditMeal(m) {
+  editMeal = m;
+  $('#e-chips').innerHTML = MEALS.map(([id, n]) => `<button class="chip${id === m ? ' on' : ''}" data-m="${id}">${n}</button>`).join('');
+}
+function openEdit(id) {
+  const e = entries.find(x => x.id === id);
+  if (!e) return;
+  editing = e;
+  editBase = Object.fromEntries(EF.map(k => [k, e[k]]));
+  $('#e-name').value = e.name;
+  EF.forEach(k => $('#e-' + k).value = r1(e[k]));
+  $('#e-err').textContent = '';
+  setEditMeal(e.meal || 'snack');
+  $('#edit').showModal();
+}
+function saveEdit() {
+  const name = $('#e-name').value.trim();
+  if (!name) { $('#e-err').textContent = 'Введи название.'; return; }
+  if (EF.some(k => $('#e-' + k).value === '' || +$('#e-' + k).value < 0)) {
+    $('#e-err').textContent = 'Заполни все числа, они не могут быть меньше нуля.';
+    return;
+  }
+  const v = readEdit(), orig = { ...editing };
+  const f = orig.grams > 0 ? v.grams / orig.grams : 1;
+  const manual = ['kcal', 'protein', 'fat', 'carbs'].some(k => Math.abs(v[k] - orig[k] * f) > 0.15);
+  Object.assign(editing, { name, meal: editMeal }, Object.fromEntries(EF.map(k => [k, r1(v[k])])));
+  if (manual) editing.src = 'manual';
+  save(K.ent, entries);
+  $('#edit').close();
+  render();
+}
+$('#e-grams').addEventListener('input', () => {
+  const g = +$('#e-grams').value;
+  if (!(g >= 0) || !(editBase && editBase.grams > 0)) return;
+  ['kcal', 'protein', 'fat', 'carbs'].forEach(k => $('#e-' + k).value = r1(editBase[k] * g / editBase.grams));
+});
+['kcal', 'protein', 'fat', 'carbs'].forEach(k => $('#e-' + k).addEventListener('input', () => { editBase = readEdit(); }));
+$('#e-chips').addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (b) setEditMeal(b.dataset.m); });
+$('#e-cancel').addEventListener('click', () => $('#edit').close());
+$('#e-save').addEventListener('click', saveEdit);
+
 document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
 
 (() => {
