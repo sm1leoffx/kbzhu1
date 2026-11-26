@@ -78,14 +78,14 @@ dialog{max-height:calc(100dvh - 40px);overflow:auto}
 #toast{position:fixed;left:16px;right:16px;bottom:calc(20px + env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:12px;background:var(--ink);color:var(--bg);font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s}
 #toast.on{opacity:1}
 [hidden]{display:none!important}
-.quick{display:flex;gap:10px;margin:8px 14px}
-.quick button{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--card);font-weight:600}
+.quick{display:flex;gap:8px;margin:8px 14px}
+.quick button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:12px 4px;border:1px solid var(--line);border-radius:14px;background:var(--card);font-weight:600;font-size:14px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 .chip{padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:none;font-size:14px}
 .chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
-.inrow{display:flex;gap:8px}
+.inrow{display:flex;gap:6px}
 .inrow input{flex:1;min-width:0}
-.ic{flex:none;width:46px;border:1px solid var(--line);border-radius:10px;background:var(--bg);display:flex;align-items:center;justify-content:center}
+.ic{flex:none;width:42px;border:1px solid var(--line);border-radius:10px;background:var(--bg);display:flex;align-items:center;justify-content:center}
 #v-rec,#v-found{text-align:center}
 .recdot{color:var(--over);font-weight:600;font-size:17px;margin:8px 0 14px}
 #f-name{display:block;font-size:17px}
@@ -98,6 +98,7 @@ dialog{max-height:calc(100dvh - 40px);overflow:auto}
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></symbol>
+  <symbol id="i-cam" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></g></symbol>
   <symbol id="i-bar" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14"/></g></symbol>
 </svg>
 <header>
@@ -129,6 +130,7 @@ dialog{max-height:calc(100dvh - 40px);overflow:auto}
 <div class="quick">
   <button id="q-mic"><svg width="20" height="20" aria-hidden="true"><use href="#i-mic"/></svg>Голос</button>
   <button id="q-scan"><svg width="20" height="20" aria-hidden="true"><use href="#i-bar"/></svg>Штрихкод</button>
+  <button id="q-label"><svg width="20" height="20" aria-hidden="true"><use href="#i-cam"/></svg>Этикетка</button>
 </div>
 
 <main id="meals"></main>
@@ -141,7 +143,9 @@ dialog{max-height:calc(100dvh - 40px);overflow:auto}
     <input id="inp" type="text" enterkeyhint="send" autocomplete="off" placeholder="гречка 100 г, филе 200 г" aria-label="Что ты съел">
     <button class="ic" id="b-mic" aria-label="Голосом"><svg width="22" height="22" aria-hidden="true"><use href="#i-mic"/></svg></button>
     <button class="ic" id="b-scan" aria-label="Штрихкод"><svg width="22" height="22" aria-hidden="true"><use href="#i-bar"/></svg></button>
+    <button class="ic" id="b-label" aria-label="Сфотографировать этикетку"><svg width="22" height="22" aria-hidden="true"><use href="#i-cam"/></svg></button>
   </div>
+  <input type="file" id="label-file" accept="image/*" hidden>
   <div id="v-rec" hidden>
     <p class="recdot">● Запись… Говори, что ты съел</p>
     <div class="acts"><button class="ok" id="rec-stop">Готово</button></div>
@@ -226,6 +230,24 @@ const SCHEMA = {
     required: ['name', 'grams', 'kcal', 'protein', 'fat', 'carbs', 'branded', 'query'] } } },
   required: ['items']
 };
+const FOOD = { system: PROMPT, schema: SCHEMA, pick: j => j.items || [] };
+
+const LABEL = {
+  system: `На фото упаковка продукта или таблица пищевой ценности (Nährwerte, Nutrition facts, Пищевая ценность).
+Найди значения НА 100 г (или на 100 мл) и верни: короткое название продукта по-русски (если названия не видно, напиши «Продукт»), ккал, белки, жиры, углеводы на 100 г.
+Правила:
+- Энергию бери в ккал (kcal), а не в кДж.
+- Углеводы бери общие (Kohlenhydrate), а не только сахар. Жиры бери общие, а не только насыщенные.
+- Если в таблице только значения на порцию, пересчитай на 100 г по размеру порции.
+- Если указан вес порции в граммах, верни его в serving_g, иначе 0.
+- Если на фото нет таблицы пищевой ценности или цифры не прочитать, верни found = false и нули.`,
+  schema: {
+    type: 'OBJECT',
+    properties: { found: { type: 'BOOLEAN' }, name: { type: 'STRING' }, kcal: N, protein: N, fat: N, carbs: N, serving_g: N },
+    required: ['found', 'name', 'kcal', 'protein', 'fat', 'carbs', 'serving_g']
+  },
+  pick: j => j
+};
 
 const pad = n => String(n).padStart(2, '0');
 const dateAt = off => { const d = new Date(); d.setDate(d.getDate() - off); return d; };
@@ -284,7 +306,7 @@ function render() {
       <button class="add" data-meal="${id}" aria-label="Добавить: ${name}">+</button></div>` +
       items.map(e => `<div class="row-e"><button class="t" data-edit="${esc(e.id)}" aria-label="Изменить: ${esc(e.name)}"><b>${esc(e.name)}</b>
         <small>${r0(e.grams)} г · Б ${r1(e.protein)} · Ж ${r1(e.fat)} · У ${r1(e.carbs)}</small>
-        ${e.src ? `<small>${e.src === 'db' ? '✓ база: ' + esc(e.ref) : e.src === 'manual' ? '✎ изменено вручную' : '≈ оценка Gemini'}</small>` : ''}</button>
+        ${e.src ? `<small>${e.src === 'db' ? '✓ база: ' + esc(e.ref) : e.src === 'manual' ? '✎ изменено вручную' : e.src === 'label' ? '📷 с этикетки' : '≈ оценка Gemini'}</small>` : ''}</button>
         <span class="k">${r0(e.kcal)}</span>
         <button data-id="${esc(e.id)}" aria-label="Удалить ${esc(e.name)}">×</button></div>`).join('') + '</section>';
   }).join('');
@@ -293,7 +315,7 @@ function render() {
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.8-flash'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function askOnce(model, parts) {
+async function askOnce(model, parts, cfg) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 25000);
   try {
@@ -302,9 +324,9 @@ async function askOnce(model, parts) {
       signal: ctl.signal,
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: PROMPT }] },
+        systemInstruction: { parts: [{ text: cfg.system }] },
         contents: [{ role: 'user', parts }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: { thinkingLevel: 'low' } }
+        generationConfig: { responseMimeType: 'application/json', responseSchema: cfg.schema, thinkingConfig: { thinkingLevel: 'low' } }
       })
     });
     const data = await res.json().catch(() => ({}));
@@ -314,7 +336,7 @@ async function askOnce(model, parts) {
       throw err;
     }
     const out = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-    return JSON.parse(out).items || [];
+    return cfg.pick(JSON.parse(out));
   } catch (err) {
     if (err.name === 'AbortError') err.retry = true;
     throw err;
@@ -324,13 +346,13 @@ async function askOnce(model, parts) {
 }
 
 // сначала выбранная модель (2 попытки), при перегрузке пробуем запасные
-async function ask(parts) {
+async function ask(parts, cfg = FOOD) {
   const chain = [settings.model || 'gemini-3.5-flash-lite', ...FALLBACK_MODELS.filter(m => m !== settings.model)];
   let first = null;
   for (let i = 0; i < chain.length; i++) {
     for (let attempt = 0; attempt < (i === 0 ? 2 : 1); attempt++) {
       try {
-        return await askOnce(chain[i], parts);
+        return await askOnce(chain[i], parts, cfg);
       } catch (err) {
         first = first || err;
         if (!err.retry) {
@@ -572,6 +594,54 @@ async function onCode(code) {
     $('#err').textContent = 'База продуктов недоступна. Попробуй ещё раз позже.';
   }
 }
+function photoToBase64(file, max = 1600) {
+  return new Promise((ok, fail) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      ok(c.toDataURL('image/jpeg', 0.85).split(',')[1]);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); fail(new Error('Не удалось открыть фото')); };
+    img.src = url;
+  });
+}
+async function onLabelPhoto(file) {
+  if (!file || busy) return;
+  if (!settings.key) { $('#err').textContent = 'Вставь ключ Gemini в настройках (⚙︎).'; return; }
+  busy = true;
+  showView('text');
+  $('#err').textContent = 'Читаю этикетку…';
+  try {
+    const data = await photoToBase64(file);
+    const r = await ask([
+      { inlineData: { mimeType: 'image/jpeg', data } },
+      { text: 'Прочитай таблицу пищевой ценности на фото.' }
+    ], LABEL);
+    if (!r.found || [r.kcal, r.protein, r.fat, r.carbs].some(x => !(x >= 0))) {
+      $('#err').textContent = 'Не нашёл таблицу пищевой ценности. Сфотографируй ближе и ровнее или опиши продукт текстом.';
+      return;
+    }
+    found = { name: r.name || 'Продукт', ref: 'с этикетки', src: 'label', kcal: +r.kcal, protein: +r.protein, fat: +r.fat, carbs: +r.carbs };
+    $('#f-name').textContent = found.name;
+    $('#f-info').textContent = `на 100 г: ${r0(found.kcal)} ккал · Б ${r1(found.protein)} · Ж ${r1(found.fat)} · У ${r1(found.carbs)}`;
+    $('#f-grams').value = r0(r.serving_g) || 100;
+    $('#err').textContent = '';
+    showView('found');
+  } catch (err) {
+    $('#err').textContent = err.name === 'AbortError' ? 'Gemini отвечает слишком долго. Попробуй ещё раз.'
+      : err.retry ? 'Gemini сейчас перегружен. Попробуй ещё раз через минуту.'
+      : 'Не получилось прочитать этикетку: ' + (err.message || 'неизвестная ошибка');
+  } finally {
+    busy = false;
+    $('#a-ok').textContent = 'Считать';
+  }
+}
 function addFound() {
   const g = +$('#f-grams').value;
   if (!found || !(g > 0)) { $('#err').textContent = 'Введи вес в граммах.'; return; }
@@ -580,7 +650,7 @@ function addFound() {
     id: Date.now() + '-' + Math.random().toString(36).slice(2),
     day: dayKey(offset), meal: addMeal, name: found.name, grams: r1(g), kcal: r1(found.kcal * f),
     protein: r1(found.protein * f), fat: r1(found.fat * f), carbs: r1(found.carbs * f),
-    src: 'db', ref: found.ref
+    src: found.src || 'db', ref: found.ref
   });
   save(K.ent, entries);
   $('#add').close();
@@ -596,6 +666,7 @@ function openAdd(meal, mode = 'text') {
   $('#add').showModal();
   if (mode === 'voice') startVoice();
   else if (mode === 'scan') startScan();
+  else if (mode === 'label') $('#label-file').click();
   else $('#inp').focus();
 }
 
@@ -621,8 +692,11 @@ $('#gear').addEventListener('click', openSettings);
 $('#a-ok').addEventListener('click', send);
 $('#q-mic').addEventListener('click', () => openAdd(autoMeal(), 'voice'));
 $('#q-scan').addEventListener('click', () => openAdd(autoMeal(), 'scan'));
+$('#q-label').addEventListener('click', () => openAdd(autoMeal(), 'label'));
 $('#b-mic').addEventListener('click', startVoice);
 $('#b-scan').addEventListener('click', startScan);
+$('#b-label').addEventListener('click', () => $('#label-file').click());
+$('#label-file').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; onLabelPhoto(f); });
 $('#rec-stop').addEventListener('click', finishVoice);
 $('#f-add').addEventListener('click', addFound);
 $('#chips').addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (b) setMeal(b.dataset.m); });
